@@ -15,6 +15,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
+	"github.com/anthropics/anthropic-sdk-go/vertex"
 
 	"github.com/docker/cagent/pkg/chat"
 	"github.com/docker/cagent/pkg/config/latest"
@@ -108,6 +109,86 @@ func (c *Client) interleavedThinkingEnabled() bool {
 	}
 }
 
+// providerOption extracts a string value from ModelConfig.ProviderOpts.
+func providerOption(cfg *latest.ModelConfig, name string) string {
+	v := cfg.ProviderOpts[name]
+	if v, ok := v.(string); ok {
+		return v
+	}
+	return ""
+}
+
+// isVertexAI returns true when provider_opts contains project or location,
+// indicating that the model should be accessed via Google Vertex AI.
+func isVertexAI(cfg *latest.ModelConfig) bool {
+	return cfg.ProviderOpts["project"] != nil || cfg.ProviderOpts["location"] != nil
+}
+
+// newDirectClient creates an Anthropic client for direct API or Vertex AI access.
+func newDirectClient(ctx context.Context, cfg *latest.ModelConfig, env environment.Provider) (anthropic.Client, error) {
+	if isVertexAI(cfg) {
+		return newVertexClient(ctx, cfg, env)
+	}
+	return newAPIKeyClient(ctx, cfg, env)
+}
+
+// newVertexClient creates an Anthropic client backed by Google Vertex AI
+// using Application Default Credentials.
+func newVertexClient(ctx context.Context, cfg *latest.ModelConfig, env environment.Provider) (anthropic.Client, error) {
+	project, err := environment.Expand(ctx, providerOption(cfg, "project"), env)
+	if err != nil {
+		return anthropic.Client{}, fmt.Errorf("expanding project: %w", err)
+	}
+	if project == "" {
+		return anthropic.Client{}, errors.New("project must be set in provider_opts for Vertex AI")
+	}
+
+	location, err := environment.Expand(ctx, providerOption(cfg, "location"), env)
+	if err != nil {
+		return anthropic.Client{}, fmt.Errorf("expanding location: %w", err)
+	}
+	if location == "" {
+		return anthropic.Client{}, errors.New("location must be set in provider_opts for Vertex AI")
+	}
+
+	// vertex.WithGoogleAuth panics on auth failure; recover to return a proper error.
+	vertexOpt, err := withVertexAuth(ctx, location, project)
+	if err != nil {
+		return anthropic.Client{}, err
+	}
+
+	slog.Debug("Creating Anthropic client with Vertex AI backend", "project", project, "location", location)
+	return anthropic.NewClient(vertexOpt), nil
+}
+
+// withVertexAuth wraps vertex.WithGoogleAuth, recovering from panics to return an error.
+func withVertexAuth(ctx context.Context, region, projectID string) (opt option.RequestOption, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("vertex AI auth failed: %v", r)
+		}
+	}()
+	return vertex.WithGoogleAuth(ctx, region, projectID), nil
+}
+
+// newAPIKeyClient creates a standard Anthropic client using an API key.
+func newAPIKeyClient(ctx context.Context, cfg *latest.ModelConfig, env environment.Provider) (anthropic.Client, error) {
+	authToken, _ := env.Get(ctx, "ANTHROPIC_API_KEY")
+	if authToken == "" {
+		return anthropic.Client{}, errors.New("ANTHROPIC_API_KEY environment variable is required")
+	}
+
+	slog.Debug("Anthropic API key found, creating client")
+	requestOptions := []option.RequestOption{
+		option.WithAPIKey(authToken),
+		option.WithHTTPClient(httpclient.NewHTTPClient()),
+	}
+	if cfg.BaseURL != "" {
+		requestOptions = append(requestOptions, option.WithBaseURL(cfg.BaseURL))
+	}
+	return anthropic.NewClient(requestOptions...), nil
+}
+
 // NewClient creates a new Anthropic client from the provided configuration
 func NewClient(ctx context.Context, cfg *latest.ModelConfig, env environment.Provider, opts ...options.Opt) (*Client, error) {
 	if cfg == nil {
@@ -141,20 +222,10 @@ func NewClient(ctx context.Context, cfg *latest.ModelConfig, env environment.Pro
 	}
 
 	if gateway := globalOptions.Gateway(); gateway == "" {
-		authToken, _ := env.Get(ctx, "ANTHROPIC_API_KEY")
-		if authToken == "" {
-			return nil, errors.New("ANTHROPIC_API_KEY environment variable is required")
+		client, err := newDirectClient(ctx, cfg, env)
+		if err != nil {
+			return nil, err
 		}
-
-		slog.Debug("Anthropic API key found, creating client")
-		requestOptions := []option.RequestOption{
-			option.WithAPIKey(authToken),
-			option.WithHTTPClient(httpclient.NewHTTPClient()),
-		}
-		if cfg.BaseURL != "" {
-			requestOptions = append(requestOptions, option.WithBaseURL(cfg.BaseURL))
-		}
-		client := anthropic.NewClient(requestOptions...)
 		anthropicClient.clientFn = func(context.Context) (anthropic.Client, error) {
 			return client, nil
 		}

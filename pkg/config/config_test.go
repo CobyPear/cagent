@@ -238,6 +238,10 @@ func TestCheckRequiredEnvVars(t *testing.T) {
 			expectedMissing: []string{"ANTHROPIC_API_KEY"},
 		},
 		{
+			yaml:            "anthropic_vertex_model.yaml",
+			expectedMissing: []string{},
+		},
+		{
 			yaml:            "google_model.yaml",
 			expectedMissing: []string{"GOOGLE_API_KEY"},
 		},

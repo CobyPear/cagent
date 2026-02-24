@@ -108,7 +108,9 @@ func addEnvVarsForModelConfig(model *latest.ModelConfig, customProviders map[str
 		case "openai":
 			requiredEnv["OPENAI_API_KEY"] = true
 		case "anthropic":
-			requiredEnv["ANTHROPIC_API_KEY"] = true
+			if model.ProviderOpts["project"] == nil && model.ProviderOpts["location"] == nil {
+				requiredEnv["ANTHROPIC_API_KEY"] = true
+			}
 		case "google":
 			if model.ProviderOpts["project"] == nil && model.ProviderOpts["location"] == nil {
 				if os.Getenv("GOOGLE_GENAI_USE_VERTEXAI") != "" {

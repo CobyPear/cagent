@@ -24,6 +24,76 @@ func testClient() *Client {
 	return &Client{}
 }
 
+func TestProviderOption(t *testing.T) {
+	tests := []struct {
+		name     string
+		opts     map[string]any
+		key      string
+		expected string
+	}{
+		{name: "string value", opts: map[string]any{"project": "my-project"}, key: "project", expected: "my-project"},
+		{name: "missing key", opts: map[string]any{}, key: "project", expected: ""},
+		{name: "nil opts", opts: nil, key: "project", expected: ""},
+		{name: "non-string value", opts: map[string]any{"project": 42}, key: "project", expected: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &latest.ModelConfig{ProviderOpts: tt.opts}
+			assert.Equal(t, tt.expected, providerOption(cfg, tt.key))
+		})
+	}
+}
+
+func TestIsVertexAI(t *testing.T) {
+	tests := []struct {
+		name     string
+		opts     map[string]any
+		expected bool
+	}{
+		{name: "both set", opts: map[string]any{"project": "p", "location": "l"}, expected: true},
+		{name: "project only", opts: map[string]any{"project": "p"}, expected: true},
+		{name: "location only", opts: map[string]any{"location": "l"}, expected: true},
+		{name: "neither set", opts: map[string]any{}, expected: false},
+		{name: "nil opts", opts: nil, expected: false},
+		{name: "other opts only", opts: map[string]any{"interleaved_thinking": true}, expected: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &latest.ModelConfig{ProviderOpts: tt.opts}
+			assert.Equal(t, tt.expected, isVertexAI(cfg))
+		})
+	}
+}
+
+func TestNewVertexClient_MissingProject(t *testing.T) {
+	cfg := &latest.ModelConfig{
+		Provider:     "anthropic",
+		Model:        "claude-opus-4-6@20250514",
+		ProviderOpts: map[string]any{"location": "us-central1"},
+	}
+	env := &staticEnv{}
+	_, err := newVertexClient(t.Context(), cfg, env)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "project must be set")
+}
+
+func TestNewVertexClient_MissingLocation(t *testing.T) {
+	cfg := &latest.ModelConfig{
+		Provider:     "anthropic",
+		Model:        "claude-opus-4-6@20250514",
+		ProviderOpts: map[string]any{"project": "my-project"},
+	}
+	env := &staticEnv{}
+	_, err := newVertexClient(t.Context(), cfg, env)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "location must be set")
+}
+
+// staticEnv is a test environment provider that returns static values.
+type staticEnv struct{}
+
+func (e *staticEnv) Get(_ context.Context, _ string) (string, bool) { return "", false }
+
 func TestCreateChatCompletionStream_ErrorOnEmptyMessages(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("request should not have been sent")

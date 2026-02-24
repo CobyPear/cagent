@@ -1,0 +1,14 @@
+version: "2"
+
+agents:
+  root:
+    model: claude
+    instruction: Always answer by talking like a pirate.
+
+models:
+  claude:
+    provider: anthropic
+    model: claude-opus-4-6@20250514
+    provider_opts:
+      project: my-gcp-project
+      location: us-central1
